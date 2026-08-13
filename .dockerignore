@@ -1,0 +1,14 @@
+# Excluir del contexto de build docker (el Dockerfile solo necesita pyproject.toml + src)
+.venv
+venv
+.git
+.gitignore
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+.mypy_cache
+.ruff_cache
+node_modules
+.env
+.env.*
