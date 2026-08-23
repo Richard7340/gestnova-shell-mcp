@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "MCP server: sandboxed shell execution with whitelist + audit log for Ian (Gestnova)"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=0.9.0",
+    # Fijado: dejarlo abierto por arriba hace que construir la misma imagen de
+    # resultados distintos segun el dia. asset-finance-modeler llego a 11.153
+    # reinicios por eso, al traer un SDK que habia eliminado su API. Este si
+    # funciona con la 2.x (verificado en produccion, 0 reinicios).
+    "mcp>=2,<3",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
     "pydantic>=2.5.0",
