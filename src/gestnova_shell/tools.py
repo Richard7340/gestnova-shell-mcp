@@ -25,7 +25,7 @@ def build_tool_registry() -> dict[str, dict]:
         return {"roots": list_allowed_roots(args.get("tenantId"))}
 
     def t_tail_audit(args: dict) -> dict:
-        return {"entries": tail_audit(int(args.get("n", 50)))}
+        return {"entries": tail_audit(int(args.get("n", 50)), args.get("tenantId"))}
 
     return {
         "execTask": {
@@ -57,8 +57,14 @@ def build_tool_registry() -> dict[str, dict]:
             "handler": t_list_roots,
         },
         "tailAudit": {
-            "description": "Devuelve las últimas N entradas del audit log (eventos exec/denied/denied_cwd).",
-            "input_schema": {"type": "object", "properties": {"n": {"type": "integer", "default": 50}}},
+            "description": "Devuelve las últimas N entradas del audit log DE TU ESPACIO (eventos exec/denied/denied_cwd).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "default": 50},
+                    "tenantId": {"type": "string", "description": "ID del espacio de trabajo"},
+                },
+            },
             "handler": t_tail_audit,
         },
     }

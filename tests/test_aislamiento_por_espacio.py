@@ -9,6 +9,7 @@ habria podido leer lo que otro espacio dejase ahi.
 
 Estos tests fijan lo contrario: lo mio es mio, y lo del vecino no se ve.
 """
+import json
 import tempfile
 from pathlib import Path
 
@@ -20,10 +21,12 @@ from gestnova_shell.executor import exec_task, carpeta_del_espacio
 @pytest.fixture
 def raiz(monkeypatch):
     tmp = tempfile.mkdtemp(prefix="shell-aisl-")
-    audit = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
-    audit.close()
+    # El registro va en SU carpeta, como en el contenedor. Si cayera suelto en
+    # el temporal del sistema, este test estaria comprobando los permisos de
+    # /tmp en vez de los nuestros.
+    dir_audit = tempfile.mkdtemp(prefix="shell-audit-")
     monkeypatch.setenv("SHELL_ALLOWED_ROOTS", tmp)
-    monkeypatch.setenv("SHELL_AUDIT_LOG", audit.name)
+    monkeypatch.setenv("SHELL_AUDIT_LOG", str(Path(dir_audit) / "shell-audit.jsonl"))
     return Path(tmp).resolve()
 
 
@@ -132,3 +135,46 @@ def test_no_puedo_leer_el_fichero_del_vecino_ni_por_ruta_absoluta(raiz):
     r = exec_task("read", f"cat {vecina}/secreto.txt", "", tenant_id="empresa-a")
     assert r.ok is False
     assert "nomina" not in r.stdout
+
+
+# ── El registro de auditoria tambien es de todos ────────────────────────────
+# Guarda el comando Y el stdout de cada espacio. Se quedaba en 0644 dentro de
+# un volumen que los inquilinos pueden nombrar, y `tailAudit` devolvia la cola
+# global sin filtrar: dos formas distintas de leer lo que hace el vecino.
+
+def test_el_registro_no_lo_puede_leer_un_inquilino(raiz):
+    from gestnova_shell.executor import _audit_path
+
+    # Se parte del caso REAL: en el contenedor el fichero estaba en 0644. Si el
+    # test empezara con los permisos que ya pone tempfile (0600), pasaria sin
+    # que el codigo hiciera nada.
+    registro = _audit_path()
+    registro.parent.mkdir(parents=True, exist_ok=True)
+    registro.touch()
+    os.chmod(registro.parent, 0o755)
+    os.chmod(registro, 0o644)
+
+    exec_task("read", "echo hola", "", tenant_id="empresa-a")
+
+    assert oct(registro.stat().st_mode)[-3:] == "600", "el registro debe ser solo del proceso"
+    assert oct(registro.parent.stat().st_mode)[-3:] == "700", "y su carpeta tambien"
+
+
+def test_la_cola_de_auditoria_solo_muestra_lo_propio(raiz):
+    from gestnova_shell.executor import tail_audit
+
+    exec_task("read", "echo de-la-a", "", tenant_id="empresa-a")
+    exec_task("read", "echo de-la-b", "", tenant_id="empresa-b")
+
+    de_a = tail_audit(50, tenant_id="empresa-a")
+    assert de_a, "deberia ver lo suyo"
+    assert all(e["tenant"] == "empresa-a" for e in de_a)
+    assert "de-la-b" not in json.dumps(de_a)
+
+
+def test_sin_espacio_no_se_ve_lo_de_los_demas(raiz):
+    from gestnova_shell.executor import tail_audit
+
+    exec_task("read", "echo de-la-a", "", tenant_id="empresa-a")
+    entradas = tail_audit(50, tenant_id=None)
+    assert "de-la-a" not in json.dumps(entradas)

@@ -153,6 +153,14 @@ def _append_audit(record: dict) -> None:
     record_out = {"ts": datetime.utcnow().isoformat() + "Z", **record}
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record_out, default=str) + "\n")
+    # El registro guarda el comando Y el stdout de cada espacio, y vive en un
+    # volumen cuya ruta cualquiera puede nombrar: en 0644 lo leia el vecino.
+    # Solo el proceso que lo escribe.
+    try:
+        os.chmod(path.parent, 0o700)
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def exec_task(category: str, command: str, cwd: str, timeout_s: int = DEFAULT_TIMEOUT_S, tenant_id: str | None = None) -> ExecResult:
@@ -226,19 +234,30 @@ def exec_task(category: str, command: str, cwd: str, timeout_s: int = DEFAULT_TI
     return result
 
 
-def tail_audit(n: int = 50) -> list[dict]:
+def tail_audit(n: int = 50, tenant_id: str | None = None) -> list[dict]:
+    """La cola de auditoria DE UN ESPACIO.
+
+    Devolvia la cola global sin filtrar: preguntar "que hice antes" enseñaba
+    los comandos y la salida de los demas. Se filtra siempre; sin espacio, solo
+    se ven las entradas que tampoco tenian espacio.
+    """
     path = _audit_path()
     if not path.exists():
         return []
+    # Se filtra ANTES de recortar: quedarse con las ultimas n lineas y filtrar
+    # despues devolveria casi nada en cuanto otro espacio estuviera activo.
     with path.open("r", encoding="utf-8") as f:
-        lines = f.readlines()[-n:]
+        lines = f.readlines()
     out: list[dict] = []
     for line in lines:
         try:
-            out.append(json.loads(line))
+            entrada = json.loads(line)
         except Exception:
             continue
-    return out
+        if entrada.get("tenant") != tenant_id:
+            continue
+        out.append(entrada)
+    return out[-n:]
 
 
 def list_allowed_roots(tenant_id: str | None = None) -> list[str]:

@@ -71,7 +71,7 @@ def test_exec_timeout_enforced(sandbox):
 def test_audit_log_records_executions(sandbox):
     exec_task("read", "echo audit-test", str(sandbox), tenant_id=ESPACIO)
     exec_task("read", "rm /etc/passwd", str(sandbox), tenant_id=ESPACIO)  # denied
-    entries = tail_audit(10)
+    entries = tail_audit(10, tenant_id=ESPACIO)
     assert len(entries) >= 2
     events = [e["event"] for e in entries]
     assert "exec" in events
