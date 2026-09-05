@@ -5,6 +5,7 @@ Sin shell=True, sin pipes, sin redireccion: subprocess.run con argv parseado.
 from __future__ import annotations
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -49,20 +50,54 @@ def _audit_path() -> Path:
     return Path(os.getenv("SHELL_AUDIT_LOG", str(DEFAULT_AUDIT_LOG))).expanduser()
 
 
-def _resolve_cwd(cwd: str) -> tuple[Path | None, str]:
+# Un id de espacio viene del backend (un cuid), pero de aqui no se fia nadie:
+# si se usa tal cual para construir una ruta, un "../otro" saldria de la raiz.
+_NOMBRE_SEGURO = re.compile(r"[^A-Za-z0-9_-]")
+
+# Las llamadas internas que no traen espacio tampoco pueden quedarse con la
+# raiz entera: seria la puerta de atras que anula todo el aislamiento.
+CARPETA_SIN_ESPACIO = "_sin-espacio"
+
+
+def carpeta_del_espacio(tenant_id: str | None) -> Path:
+    """El directorio propio de un espacio, creado si aun no existe.
+
+    Cada espacio trabaja SOLO dentro del suyo. Antes todos compartian la raiz:
+    `tenant_id` solo se escribia en la auditoria, asi que cualquier
+    administrador podia leer lo que otro espacio hubiera dejado ahi.
+    """
+    raices = _allowed_roots()
+    if not raices:
+        raise RuntimeError("no SHELL_ALLOWED_ROOTS configured and default not present")
+    nombre = _NOMBRE_SEGURO.sub("_", (tenant_id or "").strip()) or CARPETA_SIN_ESPACIO
+    destino = (raices[0] / nombre).resolve()
+    # Doble red: aunque el saneado fallase, la ruta tiene que caer dentro.
+    if raices[0] not in destino.parents:
+        destino = raices[0] / CARPETA_SIN_ESPACIO
+    destino.mkdir(parents=True, exist_ok=True)
+    return destino
+
+
+def _resolve_cwd(cwd: str, tenant_id: str | None = None) -> tuple[Path | None, str]:
+    try:
+        propia = carpeta_del_espacio(tenant_id)
+    except RuntimeError as exc:
+        return None, str(exc)
+
+    # Sin cwd, se trabaja en la carpeta propia: es lo que espera quien llama
+    # sin saber nada de rutas.
+    if not (cwd or "").strip():
+        return propia, ""
+
     p = Path(cwd).expanduser().resolve()
     if not p.exists() or not p.is_dir():
         return None, f"cwd does not exist or is not a directory: {cwd!r}"
-    allowed = _allowed_roots()
-    if not allowed:
-        return None, "no SHELL_ALLOWED_ROOTS configured and default not present"
-    for root in allowed:
-        try:
-            p.relative_to(root)
-            return p, ""
-        except ValueError:
-            continue
-    return None, f"cwd not under any allowed root. Allowed: {[str(r) for r in allowed]}"
+
+    # La raiz permitida de este espacio es SU carpeta, no la raiz comun: pedir
+    # la raiz comun (o la carpeta del vecino) se rechaza igual.
+    if p != propia and propia not in p.parents:
+        return None, "cwd fuera del espacio de trabajo propio"
+    return p, ""
 
 
 def _append_audit(record: dict) -> None:
@@ -86,7 +121,7 @@ def exec_task(category: str, command: str, cwd: str, timeout_s: int = DEFAULT_TI
         _append_audit({"event": "denied", "tenant": tenant_id, **asdict(result)})
         return result
 
-    resolved_cwd, cwd_reason = _resolve_cwd(cwd)
+    resolved_cwd, cwd_reason = _resolve_cwd(cwd, tenant_id)
     if resolved_cwd is None:
         result = ExecResult(ok=False, exitCode=None, stdout="", stderr="", durationMs=0, truncated=False, cwd=cwd, argv=argv, category=category, reason=cwd_reason)
         _append_audit({"event": "denied_cwd", "tenant": tenant_id, **asdict(result)})
@@ -146,5 +181,11 @@ def tail_audit(n: int = 50) -> list[dict]:
     return out
 
 
-def list_allowed_roots() -> list[str]:
-    return [str(p) for p in _allowed_roots()]
+def list_allowed_roots(tenant_id: str | None = None) -> list[str]:
+    """El unico directorio en el que este espacio puede trabajar.
+
+    Antes devolvia la raiz comun. Anunciar una raiz que luego se rechaza es la
+    peor combinacion posible: el agente hace exactamente lo que se le dice y le
+    falla todo sin entender por que.
+    """
+    return [str(carpeta_del_espacio(tenant_id))]

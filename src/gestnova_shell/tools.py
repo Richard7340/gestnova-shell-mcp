@@ -21,8 +21,8 @@ def build_tool_registry() -> dict[str, dict]:
     def t_list_categories(_args: dict) -> dict:
         return {"categories": categories_listing()}
 
-    def t_list_roots(_args: dict) -> dict:
-        return {"roots": list_allowed_roots()}
+    def t_list_roots(args: dict) -> dict:
+        return {"roots": list_allowed_roots(args.get("tenantId"))}
 
     def t_tail_audit(args: dict) -> dict:
         return {"entries": tail_audit(int(args.get("n", 50)))}
@@ -35,9 +35,9 @@ def build_tool_registry() -> dict[str, dict]:
                 "properties": {
                     "category": {"type": "string", "description": "Categoría: read, git_read, build, python_safe, finance_tools"},
                     "command": {"type": "string", "description": "Comando completo (será parseado con shlex.split, sin shell)"},
-                    "cwd": {"type": "string", "description": "Working directory absoluto, debe estar bajo una raíz permitida"},
+                    "cwd": {"type": "string", "description": "Working directory absoluto, dentro del directorio de TU espacio (ver listAllowedRoots). Vacio = tu directorio"},
                     "timeoutSeconds": {"type": "integer", "description": "Timeout en segundos (1-300, default 60)"},
-                    "tenantId": {"type": "string", "description": "ID del tenant para audit log (opcional pero recomendado)"},
+                    "tenantId": {"type": "string", "description": "ID del espacio de trabajo: determina en que directorio se ejecuta y queda en la auditoria"},
                 },
                 "required": ["category", "command", "cwd"],
             },
@@ -49,8 +49,11 @@ def build_tool_registry() -> dict[str, dict]:
             "handler": t_list_categories,
         },
         "listAllowedRoots": {
-            "description": "Lista los directorios permitidos como cwd para execTask.",
-            "input_schema": {"type": "object", "properties": {}},
+            "description": "Devuelve el directorio de trabajo de tu espacio: el unico cwd valido para execTask.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"tenantId": {"type": "string", "description": "ID del espacio de trabajo"}},
+            },
             "handler": t_list_roots,
         },
         "tailAudit": {
