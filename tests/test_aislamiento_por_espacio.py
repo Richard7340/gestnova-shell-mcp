@@ -97,3 +97,38 @@ def test_sin_espacio_tambien_se_anuncia_lo_usable(raiz):
     anunciadas = list_allowed_roots(None)
     r = exec_task("read", "ls", anunciadas[0], tenant_id=None)
     assert r.ok is True
+
+
+# ── Lo que el cwd NO protege ────────────────────────────────────────────────
+# Confinar el directorio de trabajo no impide nombrar una ruta absoluta: el
+# primer intento dejaba pasar `cat /data/workspace/otro/secreto.txt` desde la
+# carpeta propia. La barrera tiene que ponerla el sistema de ficheros, no una
+# comprobacion nuestra sobre el texto del comando.
+import os
+
+from gestnova_shell.executor import uid_del_espacio
+
+
+def test_cada_espacio_tiene_un_uid_propio_y_estable(raiz):
+    a1 = uid_del_espacio("empresa-a")
+    a2 = uid_del_espacio("empresa-a")
+    b = uid_del_espacio("empresa-b")
+    assert a1 == a2, "el mismo espacio no puede cambiar de uid entre llamadas"
+    assert a1 != b, "dos espacios distintos no pueden compartir uid"
+    assert a1 >= 20000, "fuera del rango de usuarios del sistema"
+
+
+def test_la_carpeta_es_privada_de_su_espacio(raiz):
+    c = carpeta_del_espacio("empresa-a")
+    modo = oct(c.stat().st_mode)[-3:]
+    assert modo == "700", f"la carpeta deberia ser privada, es {modo}"
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="cambiar de usuario requiere root")
+def test_no_puedo_leer_el_fichero_del_vecino_ni_por_ruta_absoluta(raiz):
+    vecina = carpeta_del_espacio("empresa-b")
+    (vecina / "secreto.txt").write_text("nomina de la empresa B")
+
+    r = exec_task("read", f"cat {vecina}/secreto.txt", "", tenant_id="empresa-a")
+    assert r.ok is False
+    assert "nomina" not in r.stdout

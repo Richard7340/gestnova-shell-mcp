@@ -59,6 +59,44 @@ _NOMBRE_SEGURO = re.compile(r"[^A-Za-z0-9_-]")
 CARPETA_SIN_ESPACIO = "_sin-espacio"
 
 
+# Rango por encima de los usuarios del sistema. Los uid se reparten en orden y
+# se guardan: si cambiaran entre reinicios, cada espacio perderia el acceso a
+# sus propios ficheros.
+UID_BASE = 20000
+
+
+def _mapa_de_uids() -> Path:
+    return Path(os.getenv("SHELL_UID_MAP", str(_audit_path().parent / "uids.json")))
+
+
+def uid_del_espacio(tenant_id: str | None) -> int:
+    """El usuario del sistema con el que corre este espacio.
+
+    La barrera de verdad la pone el sistema de ficheros. Confinar el directorio
+    de trabajo no basta: un comando puede nombrar la ruta absoluta del vecino y
+    leerla igual. Con un uid propio y la carpeta en 0700, el nucleo lo impide
+    diga lo que diga el comando.
+    """
+    nombre = _NOMBRE_SEGURO.sub("_", (tenant_id or "").strip()) or CARPETA_SIN_ESPACIO
+    ruta = _mapa_de_uids()
+    try:
+        mapa = json.loads(ruta.read_text()) if ruta.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        mapa = {}
+    if nombre in mapa:
+        return int(mapa[nombre])
+    usados = {int(v) for v in mapa.values()}
+    uid = UID_BASE
+    while uid in usados:
+        uid += 1
+    mapa[nombre] = uid
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ruta.with_suffix(".tmp")
+    tmp.write_text(json.dumps(mapa))
+    tmp.replace(ruta)  # atomico: dos procesos a la vez no dejan el mapa a medias
+    return uid
+
+
 def carpeta_del_espacio(tenant_id: str | None) -> Path:
     """El directorio propio de un espacio, creado si aun no existe.
 
@@ -75,6 +113,15 @@ def carpeta_del_espacio(tenant_id: str | None) -> Path:
     if raices[0] not in destino.parents:
         destino = raices[0] / CARPETA_SIN_ESPACIO
     destino.mkdir(parents=True, exist_ok=True)
+    # Privada de su dueno: es esto, y no una comprobacion nuestra sobre el
+    # texto del comando, lo que impide que el vecino la lea.
+    try:
+        os.chmod(destino, 0o700)
+        if os.geteuid() == 0:
+            uid = uid_del_espacio(tenant_id)
+            os.chown(destino, uid, uid)
+    except OSError:
+        pass
     return destino
 
 
@@ -129,6 +176,18 @@ def exec_task(category: str, command: str, cwd: str, timeout_s: int = DEFAULT_TI
 
     start = time.monotonic()
     try:
+        # Como root, el comando se ejecuta con el usuario del espacio: asi el
+        # nucleo aplica los permisos y da igual que ruta absoluta se nombre.
+        # Sin root (desarrollo) no se puede cambiar de usuario y solo queda el
+        # confinamiento del cwd, que NO basta por si solo.
+        extra: dict = {}
+        if os.geteuid() == 0:
+            uid = uid_del_espacio(tenant_id)
+            # HOME apunta a su carpeta: el usuario del espacio no puede escribir
+            # en /root, y herramientas como npm o uv fallarian ahi con un error
+            # de permisos que no dice nada de lo que pasa de verdad.
+            entorno = {**os.environ, "HOME": str(resolved_cwd)}
+            extra = {"user": uid, "group": uid, "env": entorno}
         proc = subprocess.run(
             argv,
             cwd=str(resolved_cwd),
@@ -137,6 +196,7 @@ def exec_task(category: str, command: str, cwd: str, timeout_s: int = DEFAULT_TI
             timeout=timeout_s,
             check=False,
             shell=False,
+            **extra,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
         stdout = proc.stdout or ""
